@@ -1484,12 +1484,18 @@ class FlowchartDesigner(QMainWindow):
             fig.clear()
             ax = fig.add_subplot(111)
             
-            pos = nx.spring_layout(G, k=3, iterations=50)
+            # pos = nx.spring_layout(G, k=3, iterations=50)
+            pos = nx.kamada_kawai_layout(G)
             node_colors = [G.nodes[node].get('color', 'lightblue') for node in G.nodes()]
             
             nx.draw_networkx_nodes(G, pos, node_color=node_colors, node_size=2500, ax=ax, alpha=0.9, edgecolors='black', linewidths=1)
-            nx.draw_networkx_edges(G, pos, ax=ax, edge_color='gray', arrows=True, arrowsize=20, arrowstyle='->')
-            
+            # nx.draw_networkx_edges(G, pos, ax=ax, edge_color='gray', arrows=True, arrowsize=20, arrowstyle='->')
+            nx.draw_networkx_edges(G, pos, ax=ax, edge_color='gray', arrows=True, arrowsize=20, arrowstyle='-|>',
+                node_size=2500,  # Must match node_size from draw_networkx_nodes
+                min_source_margin=15,  # Space from source node
+                min_target_margin=15,  # Space from target node
+                width=2  # Make edges more visible
+            )
             labels = {node: G.nodes[node].get('label', '') for node in G.nodes()}
             nx.draw_networkx_labels(G, pos, labels, font_size=10, ax=ax, font_weight='bold')
             
