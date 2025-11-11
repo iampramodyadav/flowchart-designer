@@ -21,7 +21,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QGraphicsScene, QInputDialog, QCheckBox, QComboBox, QGridLayout,
                              QGraphicsTextItem, QGraphicsItem, QGraphicsRectItem, QGraphicsPathItem, 
                              QGraphicsEllipseItem, QGraphicsLineItem, QPlainTextEdit, QFormLayout) # Added QPlainTextEdit, QFormLayout
-from PyQt5.QtCore import Qt, QUrl, QRectF, QPointF
+from PyQt5.QtCore import Qt, QUrl, QRectF, QPointF, QTimer
 from PyQt5.QtGui import QPen, QColor, QBrush, QPainterPath, QPainter, QKeySequence, QFont, QPixmap, QImage
 from PyQt5.QtWidgets import QShortcut
 from PyQt5.QtWebEngineWidgets import QWebEngineView
@@ -87,6 +87,7 @@ class CustomGraphicsItem(QGraphicsItem):
             return value
         
         elif change == QGraphicsItem.ItemPositionHasChanged and self.shape_obj:
+            self.scene().parent_widget.autosave_activity()
             self.scene().parent_widget.refresh_preview()
             
         return super().itemChange(change, value)
@@ -290,6 +291,7 @@ class Connector(QGraphicsLineItem):
             self.label = text
             self.label_item.setPlainText(self.label)
             self.update_position()
+            self.scene.parent_widget.autosave_activity()
             self.scene.parent_widget.refresh_preview()
         
         super().mouseDoubleClickEvent(event)
@@ -362,6 +364,9 @@ class Connector(QGraphicsLineItem):
 # --- Main Designer Class ---
 
 class FlowchartDesigner(QMainWindow):
+    AUTOSAVE_INTERVAL_MS = 60000 #300000  # 5 minutes (300,000 milliseconds)
+    AUTOSAVE_FILENAME = "flowchart_autosave.json"
+
     def __init__(self):
         super().__init__()
         self.shapes = []
@@ -372,9 +377,16 @@ class FlowchartDesigner(QMainWindow):
         
         self.connection_start_shape = None
         self.temp_line = None
-        
+
+        self.autosave_file_path = Path(tempfile.gettempdir()) / self.AUTOSAVE_FILENAME
+        print(self.autosave_file_path)
+        self.autosave_timer = QTimer(self)  
+
         self.init_ui()
-        
+
+        self.setup_autosave()        # Start the autosave timer
+        self.check_for_recovery()    # Check for lost work on startup
+
     def init_ui(self):
         self.setWindowTitle("Flowchart Designer")
         self.setGeometry(100, 100, 1400, 900)
@@ -1122,12 +1134,9 @@ class FlowchartDesigner(QMainWindow):
                 QMessageBox.information(self, "Export Successful", f"Mermaid code exported to:\n{file_path}")
             except Exception as e:
                 QMessageBox.critical(self, "Export Error", f"Failed to save file: {e}")
-
-    def gui_to_json_save(self):
-        if not self.shapes:
-            QMessageBox.warning(self, "Warning", "No shapes to convert!")
-            return
-        
+    
+    def generate_json_data(self):
+        """Generates the dictionary structure of the current project state."""
         data = {"nodes": [], "connections": []}
         id_map = self.generate_id_map()
         
@@ -1150,7 +1159,37 @@ class FlowchartDesigner(QMainWindow):
                 "label": connector.label
             })
         
-        json_data = json.dumps(data, indent=2)
+        return json.dumps(data, indent=2)
+
+    def gui_to_json_save(self):
+        if not self.shapes:
+            QMessageBox.warning(self, "Warning", "No shapes to convert!")
+            return
+        
+        # data = {"nodes": [], "connections": []}
+        # id_map = self.generate_id_map()
+        
+        # for shape in self.shapes:
+        #     data["nodes"].append({
+        #         "id": id_map[shape.id],
+        #         "label": shape.text,
+        #         "type": shape.type,
+        #         "x": shape.x,
+        #         "y": shape.y,
+        #         "width": shape.width,
+        #         "height": shape.height,
+        #         "color": shape.color.name()
+        #     })
+
+        # for connector in self.connectors:
+        #     data["connections"].append({
+        #         "start_id": id_map[connector.start_shape.id],
+        #         "end_id": id_map[connector.end_shape.id],
+        #         "label": connector.label
+        #     })
+        # json_data = json.dumps(data, indent=2)
+        
+        json_data = self.generate_json_data()
         
         file_path, _ = QFileDialog.getSaveFileName(self, "Export JSON Project", "flowchart.json", "JSON Files (*.json);;All Files (*)")
         
@@ -1159,6 +1198,7 @@ class FlowchartDesigner(QMainWindow):
                 with open(file_path, 'w') as f:
                     f.write(json_data)
                 QMessageBox.information(self, "Export Successful", f"Project JSON exported to:\n{file_path}")
+                self.delete_autosave_file()
             except Exception as e:
                 QMessageBox.critical(self, "Export Error", f"Failed to save file: {e}")
     
@@ -1336,6 +1376,7 @@ class FlowchartDesigner(QMainWindow):
 
             if shape_to_delete.graphics_item:
                 self.scene.removeItem(shape_to_delete.graphics_item)
+                self.scene.parent_widget.autosave_activity()
             
             self.shapes.remove(shape_to_delete)
             self.selected_shape = None
@@ -1571,7 +1612,76 @@ class FlowchartDesigner(QMainWindow):
         return f"""
         <!DOCTYPE html><html><head><meta charset="utf-8"><title>Error</title><style>body {{ display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; font-family: Arial, sans-serif; background: #f5f5f5;}}.error {{ text-align: center; color: #d32f2f; font-size: 16px; padding: 20px; background: #ffebee; border: 1px solid #f44336; border-radius: 5px;}}</style></head><body><div class="error"><h3>{title}</h3><p>{message}</p></div></body></html>
         """
+    # --- AUTOSAVE AND RECOVERY LOGIC ---
+    
+    def save_json_data_to_file(self, data, file_path):
+        """Saves the given data structure to the specified file path."""
+        json_data = data #json.dumps(data, indent=2)
+        try:
+            with open(file_path, 'w') as f:
+                f.write(json_data)
+            return True
+        except Exception as e:
+            # We don't use QMessageBox for background autosave, just print the error
+            if file_path != str(self.autosave_file_path): 
+                QMessageBox.critical(self, "Save Error", f"Failed to save file: {e}")
+            return False
 
+    def setup_autosave(self):
+        """Initializes the QTimer for periodic autosaving."""
+        self.autosave_timer.timeout.connect(self.autosave_project)
+        self.autosave_timer.start(self.AUTOSAVE_INTERVAL_MS)
+        self.status_bar.showMessage(f"Autosave enabled (every {self.AUTOSAVE_INTERVAL_MS // 60000} minutes).")
+
+    def autosave_activity(self):
+        """Triggers autosave reset when the user makes a change."""
+        # Reset the timer every time the user performs an action (move, add, edit)
+        self.autosave_timer.stop()
+        self.autosave_timer.start(self.AUTOSAVE_INTERVAL_MS)
+        
+    def autosave_project(self):
+        """Background saving function called by the QTimer."""
+        if not self.shapes:
+            # self.delete_autosave_file()
+            pass
+            return
+
+        data = self.generate_json_data()
+        if self.save_json_data_to_file(data, str(self.autosave_file_path)):
+            self.status_bar.showMessage(f"Autosaved project to temporary file. Next save in {self.AUTOSAVE_INTERVAL_MS // 60000} min.")
+
+    def check_for_recovery(self):
+        """Checks if a recovery file exists and prompts the user to load it."""
+        if self.autosave_file_path.exists() and self.autosave_file_path.stat().st_size > 0:
+            reply = QMessageBox.question(self, 'Recovery Available', 
+                                   'A previous session crashed or closed without saving. Would you like to load the recovery file?',
+                                   QMessageBox.Yes | QMessageBox.No)
+            if reply == QMessageBox.Yes:
+                try:
+                    with open(self.autosave_file_path, 'r') as f:
+                        content = f.read()
+                    self.parse_json_to_gui(content)
+                    self.status_bar.showMessage("Work recovered from autosave file.")
+                except Exception as e:
+                    QMessageBox.critical(self, "Recovery Error", f"Failed to load recovery file: {e}")
+            
+            # Whether loaded or not, offer to delete the old file to clean up
+            self.delete_autosave_file()
+            
+    def delete_autosave_file(self):
+        """Removes the temporary autosave file."""
+        print('temp file deleted')
+        if self.autosave_file_path.exists():
+            try:
+                os.remove(self.autosave_file_path)
+            except Exception as e:
+                print(f"Warning: Could not delete autosave file: {e}")
+                
+    def closeEvent(self, event):
+        """Override close event to ensure a clean exit."""
+        # If the user closes the app normally, we remove the recovery file
+        self.delete_autosave_file()
+        super().closeEvent(event)
 
 def main():
     app = QApplication(sys.argv)
