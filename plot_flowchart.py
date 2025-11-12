@@ -39,7 +39,8 @@ class EditableTextItem(QGraphicsTextItem):
     def __init__(self, parent_shape, text):
         super().__init__(text)
         self.parent_shape = parent_shape
-        self.setFont(QFont("Arial", 9))
+        self.setFont(QFont("Arial", 9, QFont.DemiBold))
+        # self.setFont(QFont("Inter", 9,QFont.DemiBold))
         self.setTextInteractionFlags(Qt.TextEditorInteraction)
     
     def focusOutEvent(self, event):
@@ -118,7 +119,7 @@ class Shape:
         self.text_item.setPlainText(self.text)
         text_document = self.text_item.document()
         
-        MAX_WIDTH = 300 
+        MAX_WIDTH = 300+50
         MIN_WIDTH = 100
         MIN_HEIGHT = 60
         
@@ -276,8 +277,9 @@ class Connector(QGraphicsLineItem):
         self.arrow.setBrush(QBrush(QColor("gray")))
         
         self.label_item = QGraphicsTextItem(self.label, self)
-        self.label_item.setFont(QFont("Arial", 8, QFont.Bold))
-        
+        # self.label_item.setFont(QFont("Arial", 8, QFont.Bold))
+        self.label_item.setFont(QFont("Inter", 10, QFont.Bold))
+
         self.update_position()
         scene.addItem(self)
         
@@ -938,7 +940,7 @@ class FlowchartDesigner(QMainWindow):
             QMessageBox.warning(self, "Export Warning", "No shapes on the canvas to export.")
             return
 
-        formats = "PNG Image (*.png);;SVG Vector (*.svg)"
+        formats = "PNG Image (*.png);;SVG Vector (*.svg);;JPG Vector (*.jpg)"
         file_path, selected_filter = QFileDialog.getSaveFileName(
             self, "Export Design Canvas as Image", "flowchart_canvas", formats
         )
@@ -963,7 +965,7 @@ class FlowchartDesigner(QMainWindow):
             if "PNG" in selected_filter:
                 # Export as PNG
                 image = QImage(scene_rect.size().toSize(), QImage.Format_ARGB32)
-                image.fill(Qt.white)
+                image.fill(Qt.transparent)
                 
                 painter.begin(image)
                 painter.setRenderHint(QPainter.Antialiasing)
@@ -987,7 +989,21 @@ class FlowchartDesigner(QMainWindow):
                 painter.setRenderHint(QPainter.Antialiasing)
                 self.scene.render(painter)
                 painter.end()
+
+            elif "JPG" in selected_filter:
+                # Export as PNG
+                image = QImage(scene_rect.size().toSize(), QImage.Format_ARGB32)
+                image.fill(Qt.white)
                 
+                painter.begin(image)
+                painter.setRenderHint(QPainter.Antialiasing)
+                
+                # Translate painter so that scene_rect origin becomes (0,0) in the image
+                painter.translate(-scene_rect.x(), -scene_rect.y())
+                self.scene.render(painter, target=scene_rect, source=scene_rect)
+                painter.end()
+                
+                image.save(file_path, "JPG")    
             else:
                 QMessageBox.warning(self, "Export Failed", "Selected format is not supported for canvas export.")
                 return
