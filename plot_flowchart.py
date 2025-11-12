@@ -376,6 +376,7 @@ class FlowchartDesigner(QMainWindow):
         self.selected_shape = None
         self.current_tool = "select"
         self.current_color = QColor("lightblue")
+        self.current_file_path = None  # Track the current save file
         
         self.connection_start_shape = None
         self.temp_line = None
@@ -392,7 +393,9 @@ class FlowchartDesigner(QMainWindow):
     def init_ui(self):
         self.setWindowTitle("Flowchart Designer")
         self.setGeometry(100, 100, 1400, 900)
-        
+            # Create menu bar first
+        self.create_menu_bar()
+
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QHBoxLayout(central_widget)
@@ -648,13 +651,113 @@ class FlowchartDesigner(QMainWindow):
         
         self.delete_action = QShortcut(QKeySequence(Qt.Key_Delete), self)
         self.delete_action.activated.connect(self.delete_selected_shape)
+
     # --- File/Project Handling ---
-    
+    def create_menu_bar(self):
+        menubar = self.menuBar()
+        
+        # File Menu
+        file_menu = menubar.addMenu('&File')
+        
+        # New Project
+        new_action = file_menu.addAction('&New Project')
+        new_action.setShortcut('Ctrl+N')
+        new_action.triggered.connect(self.new_project)
+        
+        file_menu.addSeparator()
+        
+        # Open
+        open_action = file_menu.addAction('&Open...')
+        open_action.setShortcut('Ctrl+O')
+        open_action.triggered.connect(self.load_project_file)
+        
+        file_menu.addSeparator()
+        
+        # Save
+        save_action = file_menu.addAction('&Save')
+        save_action.setShortcut('Ctrl+S')
+        save_action.triggered.connect(self.save_project)
+        
+        # Save As
+        save_as_action = file_menu.addAction('Save &As...')
+        save_as_action.setShortcut('Ctrl+Shift+S')
+        save_as_action.triggered.connect(self.save_project_as)
+        
+        file_menu.addSeparator()
+        
+        # Exit
+        exit_action = file_menu.addAction('E&xit')
+        exit_action.setShortcut('Ctrl+Q')
+        exit_action.triggered.connect(self.close)
+
+    def new_project(self):
+        '''Create a new project, prompting to save if needed.'''
+        if self.shapes:
+            reply = QMessageBox.question(
+                self, 'New Project', 
+                'Do you want to save the current project before creating a new one?',
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel
+            )
+            
+            if reply == QMessageBox.Cancel:
+                return
+            elif reply == QMessageBox.Yes:
+                if not self.save_project():
+                    return  # User cancelled save dialog
+        
+        self.clear_canvas_internal()
+        self.current_file_path = None
+        self.setWindowTitle("Flowchart Designer - Untitled")
+        self.status_bar.showMessage("New project created")
+        self.refresh_preview()
+
+    def save_project(self):
+        '''Save the current project to the current file, or prompt for a new filename.'''
+        if not self.shapes:
+            QMessageBox.warning(self, "Save Warning", "No shapes to save!")
+            return False
+        
+        if self.current_file_path:
+            # Save to existing file
+            json_data = self.generate_json_data()
+            if self.save_json_data_to_file(json_data, self.current_file_path):
+                self.status_bar.showMessage(f"Project saved to {Path(self.current_file_path).name}")
+                self.delete_autosave_file()
+                return True
+            return False
+        else:
+            # No file path yet, use Save As
+            return self.save_project_as()
+
+    def save_project_as(self):
+        '''Prompt for a filename and save the project.'''
+        if not self.shapes:
+            QMessageBox.warning(self, "Save Warning", "No shapes to save!")
+            return False
+        
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, 
+            "Save Project As", 
+            "flowchart.json", 
+            "JSON Project Files (*.json);;All Files (*)"
+        )
+        
+        if file_path:
+            json_data = self.generate_json_data()
+            if self.save_json_data_to_file(json_data, file_path):
+                self.current_file_path = file_path
+                self.setWindowTitle(f"Flowchart Designer - {Path(file_path).name}")
+                self.status_bar.showMessage(f"Project saved to {Path(file_path).name}")
+                self.delete_autosave_file()
+                return True
+        
+        return False
     # Regex to capture: ID, shape definition part
     NODE_DEFINITION_PATTERN = re.compile(r'^\s*(\w+)\s*(?:\s*(.+?))?\s*$') 
 
     # Regex to capture connection parts
     CONN_PATTERN = re.compile(r'^\s*(\w+)(?:.*?)\s*[-=]+>\s*(?:\|(.*?)\|)?\s*(\w+)\s*(?:.*?)\s*$')
+
 
     def parse_definition(self, mermaid_id, full_def):
         text = mermaid_id
@@ -695,9 +798,9 @@ class FlowchartDesigner(QMainWindow):
     def parse_mermaid_to_gui(self, mermaid_code: str):
         # Disconnect signal to prevent immediate refresh_preview call during auto_layout
         try:
-             self.scene.selectionChanged.disconnect(self.on_selection_changed)
+            self.scene.selectionChanged.disconnect(self.on_selection_changed)
         except TypeError:
-             pass 
+            pass 
         
         self.scene.clear()
         self.shapes = []
@@ -724,7 +827,7 @@ class FlowchartDesigner(QMainWindow):
                 end_id = conn_match.group(3).strip()
                 connections.append((start_id, end_id, label))
             
-            # Check for explicit node definitions on the line
+            # Check for explicit node definitions on the line (NOT in connections)
             if not conn_match: 
                 def_match = self.NODE_DEFINITION_PATTERN.match(line)
                 if def_match:
@@ -733,13 +836,36 @@ class FlowchartDesigner(QMainWindow):
                     text, shape_type = self.parse_definition(mermaid_id, full_def)
                     text = text.replace('\\n', '\n')
                     node_defs[mermaid_id] = {'text': text, 'type': shape_type}
-
-            # Handle nodes defined inline (e.g., node1(text) in a connection)
-            inline_defs = re.findall(r'(\w+)([()\[{}\/]+.+?[)\]{}\/]+)', line)
-            for mermaid_id, full_def in inline_defs:
-                text, shape_type = self.parse_definition(mermaid_id, full_def)
-                if mermaid_id not in node_defs or (node_defs.get(mermaid_id) and node_defs[mermaid_id]['text'].replace('\n', '<br/>') == mermaid_id):
-                    node_defs[mermaid_id] = {'text': text, 'type': shape_type}
+            else:
+                # FIX: Only extract inline definitions from the START and END of connections
+                # Don't try to extract from the middle (labels) or from within text content
+                
+                # Extract start node definition if present
+                start_inline_match = re.match(r'^(\w+)([()\[{}\[\]/]+.+?[)\]{}\/]+)', line.split('-->')[0].strip())
+                if start_inline_match:
+                    mermaid_id = start_inline_match.group(1).strip()
+                    full_def = start_inline_match.group(2).strip()
+                    if mermaid_id not in node_defs:
+                        text, shape_type = self.parse_definition(mermaid_id, full_def)
+                        text = text.replace('\\n', '\n')
+                        node_defs[mermaid_id] = {'text': text, 'type': shape_type}
+                
+                # Extract end node definition if present
+                # Split by --> and get the last part (after optional label)
+                arrow_parts = line.split('-->')
+                if len(arrow_parts) > 1:
+                    end_part = arrow_parts[-1].strip()
+                    # Remove label if present (anything between | |)
+                    end_part = re.sub(r'\|.*?\|', '', end_part).strip()
+                    
+                    end_inline_match = re.match(r'^(\w+)([()\[{}\[\]/]+.+?[)\]{}\/]+)', end_part)
+                    if end_inline_match:
+                        mermaid_id = end_inline_match.group(1).strip()
+                        full_def = end_inline_match.group(2).strip()
+                        if mermaid_id not in node_defs:
+                            text, shape_type = self.parse_definition(mermaid_id, full_def)
+                            text = text.replace('\\n', '\n')
+                            node_defs[mermaid_id] = {'text': text, 'type': shape_type}
 
         # Pass 2: Create Shapes for all used IDs
         shape_id_map = {}
@@ -764,9 +890,9 @@ class FlowchartDesigner(QMainWindow):
                 self.connectors.append(new_connector)
 
         if self.shapes:
-             self.auto_layout()
+            self.auto_layout()
         else:
-             QMessageBox.warning(self, "Load Warning", "Could not identify any shapes from the Mermaid code.")
+            QMessageBox.warning(self, "Load Warning", "Could not identify any shapes from the Mermaid code.")
 
         # Reconnect signal
         self.scene.selectionChanged.connect(self.on_selection_changed)
@@ -1178,45 +1304,8 @@ class FlowchartDesigner(QMainWindow):
         return json.dumps(data, indent=2)
 
     def gui_to_json_save(self):
-        if not self.shapes:
-            QMessageBox.warning(self, "Warning", "No shapes to convert!")
-            return
-        
-        # data = {"nodes": [], "connections": []}
-        # id_map = self.generate_id_map()
-        
-        # for shape in self.shapes:
-        #     data["nodes"].append({
-        #         "id": id_map[shape.id],
-        #         "label": shape.text,
-        #         "type": shape.type,
-        #         "x": shape.x,
-        #         "y": shape.y,
-        #         "width": shape.width,
-        #         "height": shape.height,
-        #         "color": shape.color.name()
-        #     })
-
-        # for connector in self.connectors:
-        #     data["connections"].append({
-        #         "start_id": id_map[connector.start_shape.id],
-        #         "end_id": id_map[connector.end_shape.id],
-        #         "label": connector.label
-        #     })
-        # json_data = json.dumps(data, indent=2)
-        
-        json_data = self.generate_json_data()
-        
-        file_path, _ = QFileDialog.getSaveFileName(self, "Export JSON Project", "flowchart.json", "JSON Files (*.json);;All Files (*)")
-        
-        if file_path:
-            try:
-                with open(file_path, 'w') as f:
-                    f.write(json_data)
-                QMessageBox.information(self, "Export Successful", f"Project JSON exported to:\n{file_path}")
-                self.delete_autosave_file()
-            except Exception as e:
-                QMessageBox.critical(self, "Export Error", f"Failed to save file: {e}")
+        '''Legacy export method - now uses save_project_as.'''
+        self.save_project_as()
     
     def choose_color(self):
         color = QColorDialog.getColor(self.current_color, self, "Choose Shape Color")
@@ -1316,18 +1405,20 @@ class FlowchartDesigner(QMainWindow):
             
             if file_path.lower().endswith('.json'):
                 self.parse_json_to_gui(content)
+                self.current_file_path = file_path  # Set current file for JSON
+                self.setWindowTitle(f"Flowchart Designer - {Path(file_path).name}")
             elif file_path.lower().endswith(('.mmd', '.txt')):
                 self.parse_mermaid_to_gui(content)
+                self.current_file_path = None  # Mermaid files need Save As
+                self.setWindowTitle("Flowchart Designer - Untitled")
             
             self.status_bar.showMessage(f"Project loaded from {Path(file_path).name}")
-            # Refresh preview called inside parse_mermaid_to_gui/parse_json_to_gui
-            # self.refresh_preview() 
 
         except Exception as e:
             QMessageBox.critical(self, "Load Error", f"Failed to load file: {e}")
-            self.clear_canvas_internal() # Ensure a clean slate on failure
-            self.refresh_preview() # Refresh to show clear state in previews
-            
+            self.clear_canvas_internal()
+            self.refresh_preview()
+
     def parse_json_to_gui(self, json_data: str):
         data = json.loads(json_data)
         self.shapes = []
@@ -1694,8 +1785,22 @@ class FlowchartDesigner(QMainWindow):
                 print(f"Warning: Could not delete autosave file: {e}")
                 
     def closeEvent(self, event):
-        """Override close event to ensure a clean exit."""
-        # If the user closes the app normally, we remove the recovery file
+        '''Override close event to prompt for unsaved changes.'''
+        if self.shapes:
+            reply = QMessageBox.question(
+                self, 'Exit', 
+                'Do you want to save your work before exiting?',
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel
+            )
+            
+            if reply == QMessageBox.Cancel:
+                event.ignore()
+                return
+            elif reply == QMessageBox.Yes:
+                if not self.save_project():
+                    event.ignore()
+                    return
+        
         self.delete_autosave_file()
         super().closeEvent(event)
 
