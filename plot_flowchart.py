@@ -1211,19 +1211,20 @@ class FlowchartDesigner(QMainWindow):
     def generate_mermaid_preview(self):
         mermaid_code = self.generate_mermaid_code()
         theme = self.theme_combo.currentText()
-        
+        local_path = Path(__file__).resolve().parent
         if not mermaid_code or "No shapes on canvas" in mermaid_code:
             html_content = self._get_placeholder_html("Mermaid Preview", "No shapes to preview. Add some shapes to the canvas.")
             self.mermaid_view.setHtml(html_content)
             return
-
+        #https://cdn.jsdelivr.net/npm/mermaid@9.1.7/dist/mermaid.min.js
+        
         html_content = f"""
         <!DOCTYPE html>
         <html>
         <head>
             <meta charset="utf-8">
             <title>Mermaid Preview</title>
-            <script src="https://cdn.jsdelivr.net/npm/mermaid@9.1.7/dist/mermaid.min.js"></script>
+            <script src="js/mermaid.min.js"></script>
             <script>
                 mermaid.initialize({{ 
                     startOnLoad: true, 
@@ -1257,7 +1258,8 @@ class FlowchartDesigner(QMainWindow):
         """
         
         temp_dir = tempfile.gettempdir()
-        self.mermaid_view.setHtml(html_content, QUrl.fromLocalFile(os.path.join(temp_dir, "temp.html")))
+        # self.mermaid_view.setHtml(html_content, QUrl.fromLocalFile(os.path.join(temp_dir, "temp.html")))
+        self.mermaid_view.setHtml(html_content, QUrl.fromLocalFile(str(local_path) + os.path.sep))
         self.preview_tabs.setCurrentIndex(0)
     
     def gui_to_mermaid_save(self):
@@ -1805,6 +1807,12 @@ class FlowchartDesigner(QMainWindow):
         super().closeEvent(event)
 
 def main():
+    custom_arg = "--no-sandbox" 
+    
+    if custom_arg not in sys.argv:
+        sys.argv.append(custom_arg)
+        
+    # --- End of the change ---
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
     
