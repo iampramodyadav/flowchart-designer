@@ -931,89 +931,161 @@ class FlowchartDesigner(QMainWindow):
         shape_map = {shape.id: shape for shape in self.shapes}
         
         for shape in self.shapes:
-            G.add_node(shape.id)
+            G.add_node(shape.id, width=shape.width, height=shape.height)
             
         for connector in self.connectors:
             G.add_edge(connector.start_shape.id, connector.end_shape.id)
             
-        # 2. Use NetworkX to determine layers (a simplified topological sort)
+        # 2. Detect and break cycles for proper layering
         try:
-            layers = {}
-            current_layer = 0
-            unlayered_nodes = set(G.nodes())
+            cycles = list(nx.simple_cycles(G))
+            if cycles:
+                # Break cycles by removing one edge from each cycle
+                for cycle in cycles:
+                    if len(cycle) > 1:
+                        G.remove_edge(cycle[-1], cycle[0])
+        except:
+            pass
             
-            while unlayered_nodes:
-                if current_layer == 0:
-                    layer_nodes = [n for n in unlayered_nodes if not list(G.predecessors(n))]
-                else:
-                    layer_nodes = [n for n in unlayered_nodes if all(p in layers and layers[p] < current_layer for p in G.predecessors(n))]
+        # 3. Use topological generations for layer assignment
+        try:
+            # Get all nodes with no predecessors (root nodes)
+            root_nodes = [n for n in G.nodes() if G.in_degree(n) == 0]
+            
+            if not root_nodes:
+                # If no root nodes (all nodes are in cycles), pick the first node
+                root_nodes = [list(G.nodes())[0]]
+            
+            layers = {}
+            visited = set()
+            
+            # BFS-style layering
+            current_layer_nodes = root_nodes
+            current_layer = 0
+            
+            while current_layer_nodes:
+                next_layer_nodes = []
                 
-                if not layer_nodes:
-                    # Break if no more nodes can be placed (e.g., in case of cycles)
-                    break 
-
-                for node_id in layer_nodes:
-                    layers[node_id] = current_layer
+                for node in current_layer_nodes:
+                    if node not in visited:
+                        layers[node] = current_layer
+                        visited.add(node)
+                        
+                        # Add successors to next layer
+                        for successor in G.successors(node):
+                            if successor not in visited:
+                                # Only add to next layer if all predecessors are already placed
+                                pred_layers = [layers.get(p, -1) for p in G.predecessors(successor) if p in layers]
+                                if pred_layers and max(pred_layers) >= current_layer:
+                                    next_layer_nodes.append(successor)
                 
-                unlayered_nodes -= set(layer_nodes)
+                current_layer_nodes = list(set(next_layer_nodes))
+                current_layer += 1
+            
+            # Handle any remaining unvisited nodes
+            unvisited = set(G.nodes()) - visited
+            for node in unvisited:
+                layers[node] = current_layer
                 current_layer += 1
                 
-            # Fallback for remaining nodes (e.g., if there's a cycle)
-            for i, node_id in enumerate(unlayered_nodes):
-                layers[node_id] = current_layer + i 
-                
-        except Exception:
+        except Exception as e:
+            # Fallback: simple sequential layout
             layers = {shape.id: i for i, shape in enumerate(self.shapes)}
 
-
-        # 3. Calculate Positions
-        H_SEP = 150 
-        V_SEP = 150 
-        NODE_W = 100
-        NODE_H = 60
-        
-        layer_width = {}
+        # 4. Organize nodes by layers
         layer_nodes_list = {}
-        
-        # Calculate max layer index
         max_layer_idx = max(layers.values()) if layers else 0
         
         for i in range(max_layer_idx + 1):
-            nodes_in_layer = sorted([n for n, l in layers.items() if l == i])
+            nodes_in_layer = [n for n, l in layers.items() if l == i]
             layer_nodes_list[i] = nodes_in_layer
-            layer_width[i] = len(nodes_in_layer) * H_SEP - H_SEP + NODE_W if nodes_in_layer else 0
         
-        # Handle case where all nodes are unlayered due to cycles and are assigned high layers
-        if not layer_width and self.shapes:
-             layer_width[0] = len(self.shapes) * H_SEP - H_SEP + NODE_W
-             max_total_width = layer_width[0]
-        else:
-             max_total_width = max(layer_width.values()) if layer_width else NODE_W
-             
-        total_height = (max_layer_idx + 1) * V_SEP - V_SEP + NODE_H
+        # 5. Apply barycenter heuristic for better horizontal positioning
+        # This reduces edge crossings by positioning nodes near their connected nodes
+        def calculate_barycenter(node_id, layer_idx):
+            """Calculate the average position of connected nodes in adjacent layers"""
+            predecessors = list(G.predecessors(node_id))
+            successors = list(G.successors(node_id))
+            
+            positions = []
+            
+            # Check predecessors in previous layer
+            if layer_idx > 0 and predecessors:
+                prev_layer = layer_nodes_list.get(layer_idx - 1, [])
+                for pred in predecessors:
+                    if pred in prev_layer:
+                        positions.append(prev_layer.index(pred))
+            
+            # Check successors in next layer
+            if layer_idx < max_layer_idx and successors:
+                next_layer = layer_nodes_list.get(layer_idx + 1, [])
+                for succ in successors:
+                    if succ in next_layer:
+                        positions.append(next_layer.index(succ))
+            
+            return sum(positions) / len(positions) if positions else len(layer_nodes_list[layer_idx]) / 2
+        
+        # Sort nodes within each layer by barycenter
+        for layer_idx in range(max_layer_idx + 1):
+            nodes = layer_nodes_list[layer_idx]
+            if len(nodes) > 1:
+                # Calculate barycenter for each node
+                node_barycenters = [(node, calculate_barycenter(node, layer_idx)) for node in nodes]
+                # Sort by barycenter value
+                node_barycenters.sort(key=lambda x: x[1])
+                layer_nodes_list[layer_idx] = [node for node, _ in node_barycenters]
+        
+        # 6. Calculate actual positions with proper spacing
+        H_SEP = 200  # Increased horizontal separation
+        V_SEP = 180  # Increased vertical separation
+        MIN_H_SEP = 50  # Minimum horizontal gap between nodes
+        
+        # Calculate the width needed for each layer (considering actual node widths)
+        layer_widths = {}
+        for layer_idx, nodes in layer_nodes_list.items():
+            if not nodes:
+                layer_widths[layer_idx] = 0
+                continue
+            
+            total_width = sum(shape_map[node].width for node in nodes)
+            gaps_width = max(H_SEP, MIN_H_SEP) * (len(nodes) - 1) if len(nodes) > 1 else 0
+            layer_widths[layer_idx] = total_width + gaps_width
+        
+        max_total_width = max(layer_widths.values()) if layer_widths else 100
+        total_height = (max_layer_idx + 1) * V_SEP
 
+        # Center the entire flowchart in the view
         view_rect = self.graphics_view.viewport().rect()
-        offset_x = view_rect.width() / 2 - max_total_width / 2
-        offset_y = view_rect.height() / 2 - total_height / 2
+        offset_x = max(50, view_rect.width() / 2 - max_total_width / 2)
+        offset_y = max(50, view_rect.height() / 2 - total_height / 2)
         
+        # 7. Position each node
         for layer_idx, nodes_in_layer in layer_nodes_list.items():
+            if not nodes_in_layer:
+                continue
+            
             num_nodes = len(nodes_in_layer)
+            layer_content_width = layer_widths[layer_idx]
             
-            # Center the current layer horizontally
-            layer_content_width = (num_nodes - 1) * H_SEP + NODE_W if num_nodes > 0 else 0
+            # Start from the left edge to center this layer
             start_x = (max_total_width - layer_content_width) / 2
+            current_x = start_x
             
-            for i, node_id in enumerate(nodes_in_layer):
-                x = start_x + i * H_SEP 
+            for node_id in nodes_in_layer:
+                shape = shape_map[node_id]
                 y = layer_idx * V_SEP
                 
-                final_x = x + offset_x
+                # Position at the center of the node (not top-left)
+                final_x = current_x + offset_x
                 final_y = y + offset_y
                 
-                shape_map[node_id].update_position(final_x, final_y)
+                shape.update_position(final_x, final_y)
+                
+                # Move to next position (node width + gap)
+                current_x += shape.width + max(H_SEP, MIN_H_SEP)
         
         self.update_all_connectors() 
-        self.status_bar.showMessage("Layered auto-layout applied.")
+        self.status_bar.showMessage("Enhanced hierarchical layout applied.")
         self.refresh_preview()
 
     # --- Selected Shape Property Handlers ---
