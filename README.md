@@ -47,7 +47,7 @@ The graphical user interface (GUI) will open, ready for you to start designing.
 | **Role** | **Name** | **Contact** |
 | :--- | :--- | :--- |
 | Developer | **Pramod Kumar Yadav** | pkyadav01234@gmail.com |
-| Copyright | © 2024 Flowchart Designer | |
+| Copyright | © 2025 Flowchart Designer | |
 
 ## 📜 License
 
